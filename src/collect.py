@@ -11,7 +11,7 @@ OUTPUT_FILE = "data/bow_river_weather.csv"
 # --- Step 1: Download river data ---
 print("Getting river data...")
 url = "https://api.weather.gc.ca/collections/hydrometric-realtime/items"
-params = {"STATION_NUMBER": STATION, "f": "json", "limit": 1000}
+params = {"STATION_NUMBER": STATION, "f": "json", "limit": 2000, "sortby": "-DATETIME"}
 response = requests.get(url, params=params)
 data = response.json()
 
