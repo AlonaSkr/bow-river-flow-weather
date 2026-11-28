@@ -1,30 +1,39 @@
 import requests
 import pandas as pd
 import os
+import time
 
 # --- Settings ---
 STATION = "05BH004"      # Bow River at Calgary
-LAT = 51.05              # Calgary latitude
-LON = -114.05            # Calgary longitude
+LAT = 51.05
+LON = -114.05
 OUTPUT_FILE = "data/bow_river_weather.csv"
+
+def get_with_retry(url, params, tries=3):
+    """Try a web request up to 3 times, waiting 30 seconds each time."""
+    for attempt in range(tries):
+        try:
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as error:
+            print("Attempt", attempt + 1, "failed:", error)
+            time.sleep(5)
+    return None
 
 # --- Step 1: Download river data ---
 print("Getting river data...")
 url = "https://api.weather.gc.ca/collections/hydrometric-realtime/items"
 params = {"STATION_NUMBER": STATION, "f": "json", "limit": 2000, "sortby": "-DATETIME"}
-response = requests.get(url, params=params)
-data = response.json()
+response = get_with_retry(url, params)
+if response is None:
+    raise SystemExit("Could not get river data. Stopping.")
 
-# Take the useful part of the data and put it in a table
 rows = []
-for item in data["features"]:
+for item in response.json()["features"]:
     rows.append(item["properties"])
 river = pd.DataFrame(rows)
-
-# Make a clean time column, rounded down to the hour
 river["time"] = pd.to_datetime(river["DATETIME"], utc=True).dt.floor("h")
-
-# Keep only the columns we need, one row per hour
 river = river[["time", "DISCHARGE", "LEVEL"]]
 river = river.groupby("time").mean().reset_index()
 
@@ -39,9 +48,17 @@ params = {
     "forecast_days": 1,
     "timezone": "UTC",
 }
-response = requests.get(url, params=params)
-weather = pd.DataFrame(response.json()["hourly"])
-weather["time"] = pd.to_datetime(weather["time"], utc=True)
+response = get_with_retry(url, params)
+if response is None:
+    print("Weather failed. Saving river data only this time.")
+    weather = pd.DataFrame({
+        "time": pd.to_datetime([], utc=True),
+        "temperature_2m": [], "precipitation": [],
+        "snowfall": [], "wind_speed_10m": [],
+    })
+else:
+    weather = pd.DataFrame(response.json()["hourly"])
+    weather["time"] = pd.to_datetime(weather["time"], utc=True)
 
 # --- Step 3: Combine river and weather by time ---
 combined = river.merge(weather, on="time", how="left")
@@ -52,9 +69,8 @@ if os.path.exists(OUTPUT_FILE):
     old["time"] = pd.to_datetime(old["time"], utc=True)
     combined = pd.concat([old, combined])
 
-# Remove duplicate hours and sort by time
-combined = combined.drop_duplicates(subset="time", keep="last")
-combined = combined.sort_values("time")
+# One row per hour; keep the newest value, but never replace a value with an empty one
+combined = combined.groupby("time").last().reset_index()
 
 # --- Step 5: Save ---
 combined.to_csv(OUTPUT_FILE, index=False)
